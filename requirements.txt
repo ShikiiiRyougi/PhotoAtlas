@@ -1,0 +1,5 @@
+streamlit
+pandas
+pydeck
+sqlalchemy
+psycopg2-binary
