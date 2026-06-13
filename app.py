@@ -3,6 +3,7 @@ import pydeck as pdk
 import streamlit as st
 import pandas as pd
 import random
+from sqlalchemy import create_engine, text
 
 
 # =========================
@@ -75,14 +76,104 @@ if df.empty:
 
 
 # =========================
+# 上传图片写入数据库
+# =========================
+def insert_uploaded_photo_to_db(
+    location_name,
+    photographer,
+    latitude,
+    longitude,
+    uploaded_file
+):
+    """
+    将用户上传的本地图片以二进制形式存入 PostgreSQL 数据库。
+    """
+    try:
+        DB_URL = st.secrets["DB_URL"]
+        engine = create_engine(DB_URL)
+
+        image_bytes = uploaded_file.getvalue()
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO photos (
+                        location_name,
+                        photographer,
+                        likes,
+                        capture_time,
+                        latitude,
+                        longitude,
+                        image_url,
+                        image_data,
+                        image_mime,
+                        image_filename
+                    )
+                    VALUES (
+                        :location_name,
+                        :photographer,
+                        :likes,
+                        NOW(),
+                        :latitude,
+                        :longitude,
+                        :image_url,
+                        :image_data,
+                        :image_mime,
+                        :image_filename
+                    )
+                """),
+                {
+                    "location_name": location_name,
+                    "photographer": photographer,
+                    "likes": 0,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "image_url": None,
+                    "image_data": image_bytes,
+                    "image_mime": uploaded_file.type,
+                    "image_filename": uploaded_file.name
+                }
+            )
+
+        engine.dispose()
+        return True
+
+    except Exception as e:
+        st.error("图片写入数据库失败，请检查数据库连接或 photos 表字段。")
+        st.exception(e)
+        return False
+
+
+def get_location_options(dataframe):
+    """
+    从现有数据库中提取地点、纬度、经度，供用户上传时选择。
+    """
+    if dataframe.empty:
+        return pd.DataFrame(columns=["location_name", "latitude", "longitude"])
+
+    location_df = (
+        dataframe[["location_name", "latitude", "longitude"]]
+        .dropna()
+        .drop_duplicates(subset=["location_name"])
+        .sort_values("location_name")
+        .reset_index(drop=True)
+    )
+
+    return location_df
+
+
+# =========================
 # 从 image_url 中提取有效图片链接
+# 包括网络图片和数据库二进制转换后的 data:image 图片
 # =========================
 def get_valid_image_urls(dataframe):
     if "image_url" not in dataframe.columns:
         return []
 
     urls = dataframe["image_url"].dropna().astype(str)
-    urls = urls[urls.str.startswith(("http://", "https://"))]
+    urls = urls[
+        urls.str.startswith(("http://", "https://", "data:image"))
+    ]
     urls = list(pd.unique(urls))
 
     return urls
@@ -180,7 +271,6 @@ else:
 
 # =========================
 # 动态 CSS：顶部横幅
-# 左侧纯色，右侧随机摄影图
 # =========================
 if module_background_image_url:
     hero_card_css = f"""
@@ -595,10 +685,12 @@ st.sidebar.caption(f"当前筛选：{selected_month[0]} 月 - {selected_month[1]
 
 
 # =========================
-# 侧边栏：图片上传
+# 侧边栏：图片上传到数据库
 # =========================
 st.sidebar.markdown("---")
 st.sidebar.markdown("## 🖼️ 摄影作品上传")
+
+location_df = get_location_options(df)
 
 uploaded_file = st.sidebar.file_uploader(
     "上传摄影作品（限制 2MB）",
@@ -606,23 +698,97 @@ uploaded_file = st.sidebar.file_uploader(
     accept_multiple_files=False
 )
 
+photographer_name = st.sidebar.text_input(
+    "摄影师名称",
+    value="用户上传"
+)
+
+upload_mode = st.sidebar.radio(
+    "选择拍摄地点方式",
+    ["选择已有地点", "手动输入新地点"]
+)
+
+selected_location_name = None
+selected_latitude = None
+selected_longitude = None
+
+if upload_mode == "选择已有地点":
+    if not location_df.empty:
+        location_names = location_df["location_name"].tolist()
+
+        selected_location_name = st.sidebar.selectbox(
+            "选择拍摄地点",
+            location_names
+        )
+
+        selected_row = location_df[
+            location_df["location_name"] == selected_location_name
+        ].iloc[0]
+
+        selected_latitude = float(selected_row["latitude"])
+        selected_longitude = float(selected_row["longitude"])
+
+        st.sidebar.caption(
+            f"经纬度：{selected_latitude:.4f}, {selected_longitude:.4f}"
+        )
+    else:
+        st.sidebar.warning("当前数据库中没有可选择的已有地点，请选择手动输入新地点。")
+
+else:
+    selected_location_name = st.sidebar.text_input(
+        "输入新地点名称",
+        value=""
+    )
+
+    selected_latitude = st.sidebar.number_input(
+        "输入纬度 latitude",
+        min_value=-90.0,
+        max_value=90.0,
+        value=0.0,
+        step=0.0001,
+        format="%.6f"
+    )
+
+    selected_longitude = st.sidebar.number_input(
+        "输入经度 longitude",
+        min_value=-180.0,
+        max_value=180.0,
+        value=0.0,
+        step=0.0001,
+        format="%.6f"
+    )
+
 if uploaded_file is not None:
     file_size_mb = uploaded_file.size / (1024 * 1024)
 
     if file_size_mb > 2:
         st.sidebar.error("图片不能超过 2MB ❌")
     else:
-        if uploaded_file.name not in st.session_state.uploaded_photo_names:
-            st.session_state.uploaded_photos.append(
-                {
-                    "name": uploaded_file.name,
-                    "data": uploaded_file
-                }
-            )
-            st.session_state.uploaded_photo_names.add(uploaded_file.name)
-            st.sidebar.success("上传成功 ✅")
-        else:
-            st.sidebar.info("该图片已上传过。")
+        st.sidebar.image(
+            uploaded_file,
+            caption="待上传预览",
+            use_container_width=True
+        )
+
+        if st.sidebar.button("保存照片到数据库", use_container_width=True):
+            if not selected_location_name:
+                st.sidebar.error("请先选择或输入拍摄地点。")
+            elif selected_latitude is None or selected_longitude is None:
+                st.sidebar.error("缺少经纬度信息，无法保存。")
+            else:
+                success = insert_uploaded_photo_to_db(
+                    location_name=selected_location_name,
+                    photographer=photographer_name,
+                    latitude=selected_latitude,
+                    longitude=selected_longitude,
+                    uploaded_file=uploaded_file
+                )
+
+                if success:
+                    st.sidebar.success("照片已成功保存到数据库 ✅")
+
+                    st.cache_data.clear()
+                    st.rerun()
 
 
 # =========================
@@ -879,7 +1045,7 @@ def render_gallery():
 
             image_url = str(row["image_url"])
 
-            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://")):
+            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://", "data:image")):
                 st.image(image_url, use_container_width=True)
             else:
                 st.info("图片链接无效，无法展示。")
@@ -912,33 +1078,51 @@ def render_upload_archive():
 
     render_title_card(
         "📦 上传图片归档",
-        "这里展示你本次会话上传的摄影作品缩略图。上传入口在左侧边栏。"
+        "这里展示已经保存到数据库中的摄影作品。用户上传的新照片会在保存后出现在这里。"
     )
 
-    if not st.session_state.uploaded_photos:
-        st.info("当前还没有上传图片。请在左侧边栏上传 jpg、jpeg 或 png 图片。")
+    if df.empty:
+        st.info("当前数据库中暂无图片数据。")
         return
 
-    st.success(f"当前已上传 {len(st.session_state.uploaded_photos)} 张图片。")
+    display_df = df.copy()
+
+    if "capture_time" in display_df.columns:
+        display_df = display_df.sort_values("capture_time", ascending=False)
+
+    display_df = display_df.head(16)
 
     cols = st.columns(4)
 
-    for idx, photo in enumerate(st.session_state.uploaded_photos):
+    for idx, row in display_df.iterrows():
         with cols[idx % 4]:
             st.markdown('<div class="photo-card">', unsafe_allow_html=True)
-            st.image(
-                photo["data"],
-                caption=photo["name"],
-                use_container_width=True
+
+            image_url = str(row["image_url"])
+
+            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://", "data:image")):
+                st.image(image_url, use_container_width=True)
+            else:
+                st.info("图片无法展示。")
+
+            st.markdown(
+                f"""
+                <div style="padding: 6px 2px 2px 2px;">
+                    <div style="font-weight: 700; color: #0f172a;">
+                        {row['location_name']}
+                    </div>
+                    <div style="font-size: 13px; color: #64748b;">
+                        摄影师：{row['photographer']}
+                    </div>
+                    <div style="font-size: 13px; color: #64748b;">
+                        拍摄时间：{row['capture_time']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
             )
+
             st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    if st.button("🧹 清空上传归档"):
-        st.session_state.uploaded_photos = []
-        st.session_state.uploaded_photo_names = set()
-        st.rerun()
 
 
 # =========================
