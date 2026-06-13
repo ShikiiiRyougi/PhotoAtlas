@@ -1,6 +1,7 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine,text
 import pandas as pd
 import streamlit as st
+import uuid
 
 
 # ---------- 配置数据库连接 ----------
@@ -80,6 +81,64 @@ def process_analytics(df):
 
     return top_locations, monthly_trend
 
+def insert_photo_to_db(capture_time, longitude, latitude, location_name, photographer, image_url):
+    """
+    安全地向数据库插入一条新摄影作品元数据（已统一 Schema）
+    """
+    try:
+        # 生产环境优先读取 secrets，备用硬编码（建议生产环境移除硬编码连接串）
+        DB_URL = st.secrets["DB_URL"]
+    except Exception:
+        return False, "未找到数据库连接配置 DB_URL。"
+
+    # 生成唯一的 photo_id，解决数据库 NOT NULL 约束冲突
+    generated_id = f"p_{uuid.uuid4().hex[:8]}"  # 生成类似 p_a1b2c3d4 的短 ID，保持与 mock 数据风格一致
+
+    # 严格按照统一后的表结构顺序编写 SQL
+    sql = """
+        INSERT INTO photos (photo_id, photographer, location_name, latitude, longitude, capture_time, likes, image_url)
+        VALUES (:photo_id, :photographer, :location_name, :latitude, :longitude, :capture_time, 0, :image_url);
+    """
+    try:
+        engine = create_engine(DB_URL)
+        with engine.begin() as conn:
+            conn.execute(
+                text(sql),
+                {
+                    "photo_id": generated_id,
+                    "photographer": photographer,
+                    "location_name": location_name,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "capture_time": capture_time,
+                    "image_url": image_url
+                }
+            )
+        engine.dispose()
+        return True, "🎉 数据已安全同步至云端数据库！"
+    except Exception as e:
+        return False, f"数据库写入失败: {str(e)}"
+
+
+def delete_photo_from_db(photo_id):
+    """
+    根据主键 photo_id 从数据库中物理删除一条记录
+    """
+    try:
+        DB_URL = st.secrets["DB_URL"]
+    except Exception:
+        return False, "未找到数据库连接配置 DB_URL。"
+
+    # 注意：原先你的代码里是 id，现在统一改为 photo_id
+    sql = "DELETE FROM photos WHERE photo_id = :photo_id;"
+    try:
+        engine = create_engine(DB_URL)
+        with engine.begin() as conn:
+            conn.execute(text(sql), {"photo_id": photo_id})
+        engine.dispose()
+        return True, "💥 该摄影作品已从云端抹除！"
+    except Exception as e:
+        return False, f"数据库删除失败: {str(e)}"
 
 if __name__ == "__main__":
     df = fetch_data_from_db()
