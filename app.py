@@ -3,7 +3,6 @@ import pydeck as pdk
 import streamlit as st
 import pandas as pd
 import random
-from sqlalchemy import create_engine, text
 
 
 # =========================
@@ -76,104 +75,14 @@ if df.empty:
 
 
 # =========================
-# 上传图片写入数据库
-# =========================
-def insert_uploaded_photo_to_db(
-    location_name,
-    photographer,
-    latitude,
-    longitude,
-    uploaded_file
-):
-    """
-    将用户上传的本地图片以二进制形式存入 PostgreSQL 数据库。
-    """
-    try:
-        DB_URL = st.secrets["DB_URL"]
-        engine = create_engine(DB_URL)
-
-        image_bytes = uploaded_file.getvalue()
-
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO photos (
-                        location_name,
-                        photographer,
-                        likes,
-                        capture_time,
-                        latitude,
-                        longitude,
-                        image_url,
-                        image_data,
-                        image_mime,
-                        image_filename
-                    )
-                    VALUES (
-                        :location_name,
-                        :photographer,
-                        :likes,
-                        NOW(),
-                        :latitude,
-                        :longitude,
-                        :image_url,
-                        :image_data,
-                        :image_mime,
-                        :image_filename
-                    )
-                """),
-                {
-                    "location_name": location_name,
-                    "photographer": photographer,
-                    "likes": 0,
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "image_url": None,
-                    "image_data": image_bytes,
-                    "image_mime": uploaded_file.type,
-                    "image_filename": uploaded_file.name
-                }
-            )
-
-        engine.dispose()
-        return True
-
-    except Exception as e:
-        st.error("图片写入数据库失败，请检查数据库连接或 photos 表字段。")
-        st.exception(e)
-        return False
-
-
-def get_location_options(dataframe):
-    """
-    从现有数据库中提取地点、纬度、经度，供用户上传时选择。
-    """
-    if dataframe.empty:
-        return pd.DataFrame(columns=["location_name", "latitude", "longitude"])
-
-    location_df = (
-        dataframe[["location_name", "latitude", "longitude"]]
-        .dropna()
-        .drop_duplicates(subset=["location_name"])
-        .sort_values("location_name")
-        .reset_index(drop=True)
-    )
-
-    return location_df
-
-
-# =========================
 # 从 image_url 中提取有效图片链接
-# 包括网络图片和数据库二进制转换后的 data:image 图片
 # =========================
 def get_valid_image_urls(dataframe):
     if "image_url" not in dataframe.columns:
         return []
 
     urls = dataframe["image_url"].dropna().astype(str)
-    urls = urls[
-        urls.str.startswith(("http://", "https://", "data:image"))
-    ]
+    urls = urls[urls.str.startswith(("http://", "https://"))]
     urls = list(pd.unique(urls))
 
     return urls
@@ -182,8 +91,9 @@ def get_valid_image_urls(dataframe):
 # =========================
 # 生成视觉图片集合
 # page_bg：网页大背景
-# module_bg：顶部横幅和左侧所有按钮共用图
-# 尽量保证 page_bg 和 module_bg 不同
+# hero_bg：顶部横幅右侧背景
+# menu_buttons：每个目录按钮单独背景
+# background_button：更换背景按钮背景
 # =========================
 def generate_visual_image_set(dataframe):
     urls = get_valid_image_urls(dataframe)
@@ -191,22 +101,41 @@ def generate_visual_image_set(dataframe):
     if not urls:
         return {
             "page_bg": None,
-            "module_bg": None
+            "hero_bg": None,
+            "menu_buttons": {},
+            "background_button": None
         }
 
     urls = urls.copy()
     random.shuffle(urls)
 
-    page_bg = urls[0]
+    menu_names = [
+        "首页概览",
+        "全球地图",
+        "摄影画廊",
+        "上传归档",
+        "排行趋势"
+    ]
 
-    if len(urls) >= 2:
-        module_bg = urls[1]
-    else:
-        module_bg = urls[0]
+    def pick_image(index):
+        return urls[index % len(urls)]
+
+    page_bg = pick_image(0)
+    hero_bg = pick_image(1)
+
+    menu_buttons = {}
+    start_index = 2
+
+    for i, menu_name in enumerate(menu_names):
+        menu_buttons[menu_name] = pick_image(start_index + i)
+
+    background_button = pick_image(start_index + len(menu_names))
 
     return {
         "page_bg": page_bg,
-        "module_bg": module_bg
+        "hero_bg": hero_bg,
+        "menu_buttons": menu_buttons,
+        "background_button": background_button
     }
 
 
@@ -224,11 +153,14 @@ if "visual_images" not in st.session_state:
 
 
 page_background_image_url = st.session_state.visual_images.get("page_bg")
-module_background_image_url = st.session_state.visual_images.get("module_bg")
+hero_background_image_url = st.session_state.visual_images.get("hero_bg")
+menu_button_images = st.session_state.visual_images.get("menu_buttons", {})
+background_button_image_url = st.session_state.visual_images.get("background_button")
 
 
 # =========================
 # 页面路由
+# 用 query_params 控制页面切换
 # =========================
 page_options = {
     "home": "首页概览",
@@ -236,6 +168,14 @@ page_options = {
     "gallery": "摄影画廊",
     "upload": "上传归档",
     "rank": "排行趋势"
+}
+
+page_icons = {
+    "home": "🏠",
+    "map": "🗺️",
+    "gallery": "🎞️",
+    "upload": "📦",
+    "rank": "📈"
 }
 
 current_page_key = st.query_params.get("page", "home")
@@ -270,9 +210,9 @@ else:
 
 
 # =========================
-# 动态 CSS：顶部横幅
+# 动态 CSS：顶部主横幅
 # =========================
-if module_background_image_url:
+if hero_background_image_url:
     hero_card_css = f"""
     .hero-card {{
         padding: 34px 38px;
@@ -291,7 +231,7 @@ if module_background_image_url:
                 rgba(124, 58, 237, 0.22) 86%,
                 rgba(124, 58, 237, 0.10) 100%
             ),
-            url("{module_background_image_url}");
+            url("{hero_background_image_url}");
         background-size: cover;
         background-position: center right;
         background-repeat: no-repeat;
@@ -318,27 +258,68 @@ else:
 
 
 # =========================
-# 动态 CSS：左侧按钮统一背景图
+# 动态 CSS：每个左侧菜单按钮单独背景
 # =========================
-if module_background_image_url:
-    sidebar_button_css = f"""
-    .menu-link {{
-        background-image:
-            linear-gradient(
-                90deg,
-                rgba(37, 99, 235, 0.98) 0%,
-                rgba(59, 130, 246, 0.95) 34%,
-                rgba(79, 70, 229, 0.82) 54%,
-                rgba(99, 102, 241, 0.50) 72%,
-                rgba(124, 58, 237, 0.16) 100%
-            ),
-            url("{module_background_image_url}");
-        background-size: cover;
-        background-position: center right;
-        background-repeat: no-repeat;
-    }}
+def build_menu_button_css(menu_images):
+    menu_class_map = {
+        "首页概览": "menu-home",
+        "全球地图": "menu-map",
+        "摄影画廊": "menu-gallery",
+        "上传归档": "menu-upload",
+        "排行趋势": "menu-rank"
+    }
 
+    css = ""
+
+    for menu_name, class_name in menu_class_map.items():
+        image_url = menu_images.get(menu_name)
+
+        if image_url:
+            css += f"""
+            .{class_name} {{
+                background-image:
+                    linear-gradient(
+                        90deg,
+                        rgba(37, 99, 235, 0.98) 0%,
+                        rgba(59, 130, 246, 0.95) 34%,
+                        rgba(79, 70, 229, 0.82) 54%,
+                        rgba(99, 102, 241, 0.50) 72%,
+                        rgba(124, 58, 237, 0.16) 100%
+                    ),
+                    url("{image_url}");
+                background-size: cover;
+                background-position: center right;
+                background-repeat: no-repeat;
+            }}
+            """
+        else:
+            css += f"""
+            .{class_name} {{
+                background: linear-gradient(135deg, #2563eb, #7c3aed);
+            }}
+            """
+
+    return css
+
+
+menu_button_css = build_menu_button_css(menu_button_images)
+
+
+# =========================
+# 动态 CSS：更换背景按钮背景
+# =========================
+if background_button_image_url:
+    background_button_css = f"""
     section[data-testid="stSidebar"] .stButton > button {{
+        width: 100%;
+        min-height: 54px;
+        border-radius: 15px;
+        margin-bottom: 8px;
+        font-size: 16px;
+        font-weight: 750;
+        color: white;
+        border: none;
+        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.20);
         background-image:
             linear-gradient(
                 90deg,
@@ -348,20 +329,35 @@ if module_background_image_url:
                 rgba(99, 102, 241, 0.50) 72%,
                 rgba(124, 58, 237, 0.16) 100%
             ),
-            url("{module_background_image_url}");
+            url("{background_button_image_url}");
         background-size: cover;
         background-position: center right;
         background-repeat: no-repeat;
     }}
+
+    section[data-testid="stSidebar"] .stButton > button:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.30);
+    }}
     """
 else:
-    sidebar_button_css = """
-    .menu-link {
+    background_button_css = """
+    section[data-testid="stSidebar"] .stButton > button {
+        width: 100%;
+        min-height: 54px;
+        border-radius: 15px;
+        margin-bottom: 8px;
+        font-size: 16px;
+        font-weight: 750;
+        color: white;
+        border: none;
+        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.20);
         background: linear-gradient(135deg, #2563eb, #7c3aed);
     }
 
-    section[data-testid="stSidebar"] .stButton > button {
-        background: linear-gradient(135deg, #2563eb, #7c3aed);
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.30);
     }
     """
 
@@ -374,7 +370,8 @@ st.markdown(
     <style>
     {page_background_css}
     {hero_card_css}
-    {sidebar_button_css}
+    {menu_button_css}
+    {background_button_css}
 
     .hero-title {{
         font-size: 38px;
@@ -525,15 +522,13 @@ st.markdown(
     }}
 
     .stButton > button {{
-        width: 100%;
-        min-height: 54px;
-        border-radius: 15px;
-        margin-bottom: 8px;
-        font-size: 16px;
-        font-weight: 750;
-        color: white;
+        border-radius: 999px;
+        padding: 0.55rem 1.3rem;
+        font-weight: 700;
         border: none;
-        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.20);
+        background: linear-gradient(135deg, #2563eb, #7c3aed);
+        color: white;
+        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
     }}
 
     .stButton > button:hover {{
@@ -628,18 +623,18 @@ if monthly_trend is None:
 st.sidebar.markdown("## 功能目录")
 
 menu_items = [
-    ("home", "首页概览", "🏠"),
-    ("map", "全球地图", "🗺️"),
-    ("gallery", "摄影画廊", "🎞️"),
-    ("upload", "上传归档", "📦"),
-    ("rank", "排行趋势", "📈")
+    ("home", "首页概览", "🏠", "menu-home"),
+    ("map", "全球地图", "🗺️", "menu-map"),
+    ("gallery", "摄影画廊", "🎞️", "menu-gallery"),
+    ("upload", "上传归档", "📦", "menu-upload"),
+    ("rank", "排行趋势", "📈", "menu-rank")
 ]
 
-for key, name, icon in menu_items:
+for key, name, icon, css_class in menu_items:
     active_class = "menu-link-active" if current_page_key == key else ""
     st.sidebar.markdown(
         f"""
-        <a href="?page={key}" target="_self" class="menu-link {active_class}">
+        <a href="?page={key}" target="_self" class="menu-link {css_class} {active_class}">
             <span class="menu-label">{icon} {name}</span>
         </a>
         """,
@@ -658,7 +653,7 @@ if st.sidebar.button("更换背景", use_container_width=True):
     st.rerun()
 
 if st.session_state.visual_images.get("page_bg"):
-    st.sidebar.caption("当前页面背景与模块背景来自摄影数据库中的随机图片。")
+    st.sidebar.caption("当前模块图像与页面背景图均来自摄影数据库中的随机图片。")
 else:
     st.sidebar.caption("当前未检测到有效图片链接，使用默认背景样式。")
 
@@ -685,12 +680,10 @@ st.sidebar.caption(f"当前筛选：{selected_month[0]} 月 - {selected_month[1]
 
 
 # =========================
-# 侧边栏：图片上传到数据库
+# 侧边栏：图片上传
 # =========================
 st.sidebar.markdown("---")
 st.sidebar.markdown("## 🖼️ 摄影作品上传")
-
-location_df = get_location_options(df)
 
 uploaded_file = st.sidebar.file_uploader(
     "上传摄影作品（限制 2MB）",
@@ -698,97 +691,23 @@ uploaded_file = st.sidebar.file_uploader(
     accept_multiple_files=False
 )
 
-photographer_name = st.sidebar.text_input(
-    "摄影师名称",
-    value="用户上传"
-)
-
-upload_mode = st.sidebar.radio(
-    "选择拍摄地点方式",
-    ["选择已有地点", "手动输入新地点"]
-)
-
-selected_location_name = None
-selected_latitude = None
-selected_longitude = None
-
-if upload_mode == "选择已有地点":
-    if not location_df.empty:
-        location_names = location_df["location_name"].tolist()
-
-        selected_location_name = st.sidebar.selectbox(
-            "选择拍摄地点",
-            location_names
-        )
-
-        selected_row = location_df[
-            location_df["location_name"] == selected_location_name
-        ].iloc[0]
-
-        selected_latitude = float(selected_row["latitude"])
-        selected_longitude = float(selected_row["longitude"])
-
-        st.sidebar.caption(
-            f"经纬度：{selected_latitude:.4f}, {selected_longitude:.4f}"
-        )
-    else:
-        st.sidebar.warning("当前数据库中没有可选择的已有地点，请选择手动输入新地点。")
-
-else:
-    selected_location_name = st.sidebar.text_input(
-        "输入新地点名称",
-        value=""
-    )
-
-    selected_latitude = st.sidebar.number_input(
-        "输入纬度 latitude",
-        min_value=-90.0,
-        max_value=90.0,
-        value=0.0,
-        step=0.0001,
-        format="%.6f"
-    )
-
-    selected_longitude = st.sidebar.number_input(
-        "输入经度 longitude",
-        min_value=-180.0,
-        max_value=180.0,
-        value=0.0,
-        step=0.0001,
-        format="%.6f"
-    )
-
 if uploaded_file is not None:
     file_size_mb = uploaded_file.size / (1024 * 1024)
 
     if file_size_mb > 2:
         st.sidebar.error("图片不能超过 2MB ❌")
     else:
-        st.sidebar.image(
-            uploaded_file,
-            caption="待上传预览",
-            use_container_width=True
-        )
-
-        if st.sidebar.button("保存照片到数据库", use_container_width=True):
-            if not selected_location_name:
-                st.sidebar.error("请先选择或输入拍摄地点。")
-            elif selected_latitude is None or selected_longitude is None:
-                st.sidebar.error("缺少经纬度信息，无法保存。")
-            else:
-                success = insert_uploaded_photo_to_db(
-                    location_name=selected_location_name,
-                    photographer=photographer_name,
-                    latitude=selected_latitude,
-                    longitude=selected_longitude,
-                    uploaded_file=uploaded_file
-                )
-
-                if success:
-                    st.sidebar.success("照片已成功保存到数据库 ✅")
-
-                    st.cache_data.clear()
-                    st.rerun()
+        if uploaded_file.name not in st.session_state.uploaded_photo_names:
+            st.session_state.uploaded_photos.append(
+                {
+                    "name": uploaded_file.name,
+                    "data": uploaded_file
+                }
+            )
+            st.session_state.uploaded_photo_names.add(uploaded_file.name)
+            st.sidebar.success("上传成功 ✅")
+        else:
+            st.sidebar.info("该图片已上传过。")
 
 
 # =========================
@@ -1045,7 +964,7 @@ def render_gallery():
 
             image_url = str(row["image_url"])
 
-            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://", "data:image")):
+            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://")):
                 st.image(image_url, use_container_width=True)
             else:
                 st.info("图片链接无效，无法展示。")
@@ -1078,51 +997,33 @@ def render_upload_archive():
 
     render_title_card(
         "📦 上传图片归档",
-        "这里展示已经保存到数据库中的摄影作品。用户上传的新照片会在保存后出现在这里。"
+        "这里展示你本次会话上传的摄影作品缩略图。上传入口在左侧边栏。"
     )
 
-    if df.empty:
-        st.info("当前数据库中暂无图片数据。")
+    if not st.session_state.uploaded_photos:
+        st.info("当前还没有上传图片。请在左侧边栏上传 jpg、jpeg 或 png 图片。")
         return
 
-    display_df = df.copy()
-
-    if "capture_time" in display_df.columns:
-        display_df = display_df.sort_values("capture_time", ascending=False)
-
-    display_df = display_df.head(16)
+    st.success(f"当前已上传 {len(st.session_state.uploaded_photos)} 张图片。")
 
     cols = st.columns(4)
 
-    for idx, row in display_df.iterrows():
+    for idx, photo in enumerate(st.session_state.uploaded_photos):
         with cols[idx % 4]:
             st.markdown('<div class="photo-card">', unsafe_allow_html=True)
-
-            image_url = str(row["image_url"])
-
-            if pd.notna(row["image_url"]) and image_url.startswith(("http://", "https://", "data:image")):
-                st.image(image_url, use_container_width=True)
-            else:
-                st.info("图片无法展示。")
-
-            st.markdown(
-                f"""
-                <div style="padding: 6px 2px 2px 2px;">
-                    <div style="font-weight: 700; color: #0f172a;">
-                        {row['location_name']}
-                    </div>
-                    <div style="font-size: 13px; color: #64748b;">
-                        摄影师：{row['photographer']}
-                    </div>
-                    <div style="font-size: 13px; color: #64748b;">
-                        拍摄时间：{row['capture_time']}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
+            st.image(
+                photo["data"],
+                caption=photo["name"],
+                use_container_width=True
             )
-
             st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    if st.button("🧹 清空上传归档"):
+        st.session_state.uploaded_photos = []
+        st.session_state.uploaded_photo_names = set()
+        st.rerun()
 
 
 # =========================
