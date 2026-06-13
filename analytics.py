@@ -1,51 +1,67 @@
+from sqlalchemy import create_engine
 import pandas as pd
+import streamlit as st
 
 
+# ---------- 配置数据库连接 ----------
 def fetch_data_from_db():
-    data = [
-        {
-            "location_name": "Paris",
-            "photographer": "Alice",
-            "likes": 1200,
-            "capture_time": "2024-01-15",
-            "latitude": 48.8566,
-            "longitude": 2.3522,
-            "image_url": "https://images.unsplash.com/photo-1502602898657-3e91760cbb34"
-        },
-        {
-            "location_name": "Tokyo",
-            "photographer": "Ken",
-            "likes": 980,
-            "capture_time": "2024-03-20",
-            "latitude": 35.6762,
-            "longitude": 139.6503,
-            "image_url": "https://images.unsplash.com/photo-1540959733332-eab4deabeeaf"
-        },
-        {
-            "location_name": "New York",
-            "photographer": "Emma",
-            "likes": 1350,
-            "capture_time": "2024-06-05",
-            "latitude": 40.7128,
-            "longitude": -74.0060,
-            "image_url": "https://images.unsplash.com/photo-1534430480872-3498386e7856"
-        },
-        {
-            "location_name": "Singapore",
-            "photographer": "Leo",
-            "likes": 760,
-            "capture_time": "2024-09-10",
-            "latitude": 1.3521,
-            "longitude": 103.8198,
-            "image_url": "https://images.unsplash.com/photo-1525625293386-3f8f99389edd"
-        },
-    ]
+    """
+    从 PostgreSQL 读取 photos 表数据
+    """
+    try:
+        DB_URL = st.secrets["DB_URL"]
+    except Exception:
+        st.error("未找到数据库连接配置 DB_URL。请检查 Streamlit secrets 设置。")
+        return pd.DataFrame()
 
-    return pd.DataFrame(data)
+    try:
+        engine = create_engine(DB_URL)
+        query = "SELECT * FROM photos;"
+        df = pd.read_sql(query, engine)
+        engine.dispose()
+        return df
+
+    except Exception as e:
+        st.error("从数据库读取 photos 表失败，请检查数据库连接或表名。")
+        st.exception(e)
+        return pd.DataFrame()
 
 
 def process_analytics(df):
-    top_loc = (
+    """
+    处理数据：
+    1. 热门景点按 likes 总和排序
+    2. 每月拍摄趋势统计
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = df.copy()
+
+    required_columns = [
+        "capture_time",
+        "location_name",
+        "likes"
+    ]
+
+    missing_columns = [col for col in required_columns if col not in df.columns]
+
+    if missing_columns:
+        st.error(f"analytics.py 数据分析缺少必要字段：{missing_columns}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # 时间字段处理
+    df["capture_time"] = pd.to_datetime(df["capture_time"], errors="coerce")
+    df = df.dropna(subset=["capture_time"])
+
+    # 点赞数字段处理
+    df["likes"] = pd.to_numeric(df["likes"], errors="coerce").fillna(0)
+
+    # 提取月份
+    df["month"] = df["capture_time"].dt.month
+
+    # 热门景点排行榜：按地点统计点赞总数和照片数量
+    top_locations = (
         df.groupby("location_name", as_index=False)
         .agg(
             total_likes=("likes", "sum"),
@@ -54,11 +70,23 @@ def process_analytics(df):
         .sort_values(by="total_likes", ascending=False)
     )
 
+    # 月份趋势分析：按月份统计作品数量
     monthly_trend = (
-        df.assign(month=pd.to_datetime(df["capture_time"]).dt.month)
-        .groupby("month", as_index=False)
-        .agg(photo_count=("month", "count"))
+        df.groupby("month", as_index=False)
+        .size()
+        .rename(columns={"size": "photo_count"})
         .sort_values("month")
     )
 
-    return top_loc, monthly_trend
+    return top_locations, monthly_trend
+
+
+if __name__ == "__main__":
+    df = fetch_data_from_db()
+    top_locations, monthly_trend = process_analytics(df)
+
+    print("🔥 热门景点排行榜（按点赞总数）：")
+    print(top_locations)
+
+    print("\n📊 每月拍摄趋势：")
+    print(monthly_trend)
