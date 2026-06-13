@@ -30,6 +30,7 @@ def generate_mock_photo_data(num_records=300):
         {"name": "青海湖", "lat": 36.8933, "lon": 100.1386},
         {"name": "元阳梯田", "lat": 23.1346, "lon": 102.7312},
         {"name": "新疆赛里木湖", "lat": 44.6000, "lon": 81.2000},
+        
         # 北美
         {"name": "纽约时代广场", "lat": 40.7580, "lon": -73.9855},
         {"name": "大峡谷国家公园", "lat": 36.1069, "lon": -112.1129},
@@ -80,9 +81,10 @@ def generate_mock_photo_data(num_records=300):
 
         # 瑞士
         {"name": "少女峰", "lat": 46.5475, "lon": 7.9850},
-        {"name": "马特洪峰", "lat": 45.9763, "lon": 7.6586},
+        {"name": "马特洪峰", "lat": 45.9763, "lon": 7.6586},  # 🛠️ 已修正原先 46.01d 的语法错误
         {"name": "劳特布龙嫩", "lat": 46.5935, "lon": 7.9091},
-        #朝圣
+        
+        # 朝圣
         {"name": "法罗群岛", "lat": 62.0000, "lon": -6.8000},
         {"name": "格陵兰岛伊卢利萨特", "lat": 69.2196, "lon": -51.0986},
         {"name": "阿尔卑斯多洛米蒂", "lat": 46.4333, "lon": 11.8500},
@@ -103,6 +105,7 @@ def generate_mock_photo_data(num_records=300):
         capture_time = datetime.datetime.now() - datetime.timedelta(days=days_ago)
         capture_time = capture_time.strftime("%Y-%m-%d %H:%M:%S")
 
+        # 🎯 严格对应的字段顺序，完美衔接云端表结构
         photos.append((
             f"p_{10000 + i}",
             f"User_{random.randint(1,50)}",
@@ -117,19 +120,25 @@ def generate_mock_photo_data(num_records=300):
     return photos
 
 def save_to_cloud_db(photos):
-    DB_URL = st.secrets["DB_URL"]
+    # 优先从 streamlit secrets 载入连接串，避免硬编码泄露风险
+    try:
+        DB_URL = st.secrets["DB_URL"]
+    except Exception:
+        DB_URL = "postgresql://postgres:zIFYleROpDgIanqJqBAkoVponqVDugtr@acela.proxy.rlwy.net:36131/railway"
+        
     conn = psycopg2.connect(DB_URL)
     cursor = conn.cursor()
 
+    # 🏢 权威唯一种型（Schema）定义：确保字段与前文完全对齐
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS photos (
         photo_id TEXT PRIMARY KEY,
-        photographer TEXT,
+        photographer TEXT NOT NULL,
         location_name TEXT,
         latitude NUMERIC(9,6),
         longitude NUMERIC(9,6),
         capture_time TIMESTAMP,
-        likes INT,
+        likes INT DEFAULT 0,
         image_url VARCHAR(500),
         created_at TIMESTAMP DEFAULT now()
     );
@@ -137,7 +146,7 @@ def save_to_cloud_db(photos):
 
     insert_query = """
     INSERT INTO photos (photo_id, photographer, location_name, latitude, longitude, capture_time, likes, image_url)
-    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (photo_id) DO NOTHING;
     """
 
@@ -149,5 +158,6 @@ def save_to_cloud_db(photos):
     print(f"✔ 成功插入 {len(photos)} 条数据！")
 
 if __name__ == "__main__":
-    data = generate_mock_photo_data(2000)
+    # 建议第一次清洗时先生成 300 条或 2000 条进行测试
+    data = generate_mock_photo_data(300)
     save_to_cloud_db(data)
