@@ -120,11 +120,12 @@ def generate_mock_photo_data(num_records=300):
     return photos
 
 def save_to_cloud_db(photos):
-    # 优先从 streamlit secrets 载入连接串，避免硬编码泄露风险
-    try:
-        DB_URL = st.secrets["DB_URL"]
-    except Exception:
-        DB_URL = "postgresql://postgres:zIFYleROpDgIanqJqBAkoVponqVDugtr@acela.proxy.rlwy.net:36131/railway"
+    # 必须从 streamlit secrets 读取
+    if "DB_URL" not in st.secrets:
+        raise RuntimeError("❌ 未配置 DB_URL：请在 Streamlit secrets 中添加数据库连接字符串")
+
+    DB_URL = st.secrets["DB_URL"]
+        
         
     conn = psycopg2.connect(DB_URL)
     cursor = conn.cursor()
